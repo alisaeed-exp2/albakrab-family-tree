@@ -1,5 +1,6 @@
 import { loadFamily } from "@/lib/data";
-import { familyContext, ASK_SYSTEM_PROMPT } from "@/lib/askContext";
+import { ASK_SYSTEM_PROMPT } from "@/lib/askContext";
+import { buildAskContext } from "@/lib/askEngine";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -7,7 +8,7 @@ export const runtime = "nodejs";
 type Msg = { role: "user" | "assistant"; content: string };
 
 const MAX_QUESTION = 600;
-const MAX_HISTORY = 8;
+const MAX_HISTORY = 6;
 const RATE_LIMIT = 20; // questions
 const RATE_WINDOW_MS = 10 * 60 * 1000; // per 10 minutes per visitor
 
@@ -45,22 +46,28 @@ export async function POST(req: Request) {
   const messages = (body.messages ?? [])
     .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
     .slice(-MAX_HISTORY)
-    .map((m) => ({ role: m.role, content: m.content.slice(0, m.role === "user" ? MAX_QUESTION : 4000) }));
+    .map((m) => ({ role: m.role, content: m.content.slice(0, m.role === "user" ? MAX_QUESTION : 1500) }));
   while (messages.length && messages[0].role !== "user") messages.shift();
   if (!messages.length || messages[messages.length - 1].role !== "user") return textError("اكتب سؤالك", 400);
 
   const f = await loadFamily();
   if (Object.keys(f.persons).length === 0) return textError("الشجرة فارغة حالياً، لا توجد بيانات للإجابة عنها.", 200);
 
+  // Only the people the question is about (or a compact full tree for general questions),
+  // with relationships already computed exactly by the app.
+  const ctx = buildAskContext(f, messages);
+  const dataBlock: Record<string, unknown> = { type: "text", text: `# بيانات شجرة العائلة\n\n${ctx.text}` };
+  // The full tree is identical between questions, so caching it pays off; a focused extract is not.
+  if (ctx.mode === "full") dataBlock.cache_control = { type: "ephemeral" };
+  const effort =
+    ctx.mode === "full" ? process.env.ANTHROPIC_EFFORT || "medium" : process.env.ANTHROPIC_EFFORT_FOCUSED || "low";
+
   const base = {
     model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
     // Thinking tokens count against max_tokens, so leave plenty of room for the answer itself.
     max_tokens: 8000,
     stream: true,
-    system: [
-      { type: "text", text: ASK_SYSTEM_PROMPT },
-      { type: "text", text: `# بيانات شجرة العائلة\n\n${familyContext(f)}`, cache_control: { type: "ephemeral" } },
-    ],
+    system: [{ type: "text", text: ASK_SYSTEM_PROMPT }, dataBlock],
     messages,
   };
   const call = (body: object) =>
@@ -77,7 +84,7 @@ export async function POST(req: Request) {
   let upstream = await call({
     ...base,
     thinking: { type: "adaptive" },
-    output_config: { effort: process.env.ANTHROPIC_EFFORT || "medium" },
+    output_config: { effort },
   });
   if (upstream.status === 400) {
     // The model may not accept these settings; retry with the API defaults.
@@ -100,6 +107,8 @@ export async function POST(req: Request) {
       let buffer = "";
       let wroteText = false;
       let stopReason: string | null = null;
+      const usage = { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
+      const started = Date.now();
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -118,8 +127,15 @@ export async function POST(req: Request) {
                 if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
                   if (data.delta.text) wroteText = true;
                   controller.enqueue(encoder.encode(data.delta.text));
-                } else if (data.type === "message_delta" && data.delta?.stop_reason) {
-                  stopReason = data.delta.stop_reason;
+                } else if (data.type === "message_start" && data.message?.usage) {
+                  const u = data.message.usage;
+                  usage.input = u.input_tokens ?? 0;
+                  usage.cacheWrite = u.cache_creation_input_tokens ?? 0;
+                  usage.cacheRead = u.cache_read_input_tokens ?? 0;
+                  usage.output = u.output_tokens ?? 0;
+                } else if (data.type === "message_delta") {
+                  if (data.delta?.stop_reason) stopReason = data.delta.stop_reason;
+                  if (data.usage?.output_tokens != null) usage.output = data.usage.output_tokens;
                 } else if (data.type === "error") {
                   wroteText = true;
                   console.error("Anthropic stream error", data.error);
@@ -131,7 +147,25 @@ export async function POST(req: Request) {
             }
           }
         }
-        if (stopReason !== "end_turn") console.warn("Ask finished with stop_reason", stopReason, "text:", wroteText);
+        // One line per question in the Railway logs: search for "ask_usage".
+        console.log(
+          "ask_usage " +
+            JSON.stringify({
+              mode: ctx.mode,
+              people_sent: ctx.people,
+              names_found: ctx.mentions,
+              context_chars: ctx.text.length,
+              input_tokens: usage.input,
+              cache_write_tokens: usage.cacheWrite,
+              cache_read_tokens: usage.cacheRead,
+              output_tokens: usage.output,
+              total_input_tokens: usage.input + usage.cacheWrite + usage.cacheRead,
+              effort,
+              stop_reason: stopReason,
+              answered: wroteText,
+              seconds: Math.round((Date.now() - started) / 100) / 10,
+            }),
+        );
         if (!wroteText) {
           const msg =
             stopReason === "max_tokens"
