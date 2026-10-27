@@ -52,24 +52,38 @@ export async function POST(req: Request) {
   const f = await loadFamily();
   if (Object.keys(f.persons).length === 0) return textError("الشجرة فارغة حالياً، لا توجد بيانات للإجابة عنها.", 200);
 
-  const upstream = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
-      max_tokens: 1500,
-      stream: true,
-      system: [
-        { type: "text", text: ASK_SYSTEM_PROMPT },
-        { type: "text", text: `# بيانات شجرة العائلة\n\n${familyContext(f)}`, cache_control: { type: "ephemeral" } },
-      ],
-      messages,
-    }),
+  const base = {
+    model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
+    // Thinking tokens count against max_tokens, so leave plenty of room for the answer itself.
+    max_tokens: 8000,
+    stream: true,
+    system: [
+      { type: "text", text: ASK_SYSTEM_PROMPT },
+      { type: "text", text: `# بيانات شجرة العائلة\n\n${familyContext(f)}`, cache_control: { type: "ephemeral" } },
+    ],
+    messages,
+  };
+  const call = (body: object) =>
+    fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+  let upstream = await call({
+    ...base,
+    thinking: { type: "adaptive" },
+    output_config: { effort: process.env.ANTHROPIC_EFFORT || "medium" },
   });
+  if (upstream.status === 400) {
+    // The model may not accept these settings; retry with the API defaults.
+    console.warn("Ask: settings rejected, retrying with defaults", (await upstream.text().catch(() => "")).slice(0, 300));
+    upstream = await call(base);
+  }
 
   if (!upstream.ok || !upstream.body) {
     const detail = await upstream.text().catch(() => "");
@@ -84,6 +98,8 @@ export async function POST(req: Request) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let buffer = "";
+      let wroteText = false;
+      let stopReason: string | null = null;
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -100,8 +116,12 @@ export async function POST(req: Request) {
               try {
                 const data = JSON.parse(json);
                 if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
+                  if (data.delta.text) wroteText = true;
                   controller.enqueue(encoder.encode(data.delta.text));
+                } else if (data.type === "message_delta" && data.delta?.stop_reason) {
+                  stopReason = data.delta.stop_reason;
                 } else if (data.type === "error") {
+                  wroteText = true;
                   console.error("Anthropic stream error", data.error);
                   controller.enqueue(encoder.encode("\n\n(حدث خطأ أثناء توليد الإجابة)"));
                 }
@@ -111,8 +131,21 @@ export async function POST(req: Request) {
             }
           }
         }
+        if (stopReason !== "end_turn") console.warn("Ask finished with stop_reason", stopReason, "text:", wroteText);
+        if (!wroteText) {
+          const msg =
+            stopReason === "max_tokens"
+              ? "السؤال احتاج تفكيراً أطول من المسموح. جرّب سؤالاً أبسط أو أكثر تحديداً."
+              : stopReason === "refusal"
+                ? "لم يتمكن المساعد من الإجابة عن هذا السؤال."
+                : "لم تصل إجابة من المساعد، حاول مرة أخرى.";
+          controller.enqueue(encoder.encode(msg));
+        } else if (stopReason === "max_tokens") {
+          controller.enqueue(encoder.encode("\n\n(توقفت الإجابة لأنها طويلة جداً)"));
+        }
       } catch (e) {
         console.error("Ask stream failed", e);
+        controller.enqueue(encoder.encode("\n\n(انقطع الاتصال أثناء توليد الإجابة، حاول مرة أخرى)"));
       } finally {
         controller.close();
       }
