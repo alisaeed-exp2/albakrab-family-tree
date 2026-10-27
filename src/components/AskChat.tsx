@@ -9,7 +9,7 @@ const SUGGESTIONS = [
   "من هو الجد الأكبر للعائلة وكم عدد أبنائه؟",
   "كم عدد الأجيال في الشجرة؟ ومن هم أفراد آخر جيل؟",
   "من لديه أكبر عدد من الأبناء؟",
-  "ما صلة القرابة بين شخصين؟ (اكتب الاسمين)",
+  "ما أقرب صلة قرابة بين شخصين؟ (اكتب الاسمين)",
 ];
 
 /** Turns [[12]] into links and **text** into bold. */
@@ -111,10 +111,10 @@ export default function AskChat({ names }: { names: Record<number, string> }) {
       <div className="ask-log">
         {messages.length === 0 && (
           <div className="ask-empty">
-            <p className="muted">اسأل عن أي فرد في العائلة أو عن صلة القرابة بين شخصين. أمثلة:</p>
+            <p className="muted">السلام عليكم، أنا حاج خبرة. اسألني عن أي فرد في العائلة أو عن أقرب صلة قرابة بين شخصين. أمثلة:</p>
             <div className="ask-suggest">
               {SUGGESTIONS.map((s) => (
-                <button key={s} type="button" className="btn" onClick={() => (s.includes("(") ? setInput("ما صلة القرابة بين  و ؟") : ask(s))}>
+                <button key={s} type="button" className="btn" onClick={() => (s.includes("(") ? setInput("ما أقرب صلة قرابة بين  و ؟") : ask(s))}>
                   {s}
                 </button>
               ))}
@@ -126,7 +126,7 @@ export default function AskChat({ names }: { names: Record<number, string> }) {
             <div key={i} className="ask-msg user">{m.content}</div>
           ) : (
             <div key={i} className="ask-msg bot">
-              {m.content ? <Answer text={m.content} names={names} /> : <span className="ask-typing">يفكر…</span>}
+              {m.content ? <Answer text={m.content} names={names} /> : <span className="ask-typing">حاج خبرة يفكر…</span>}
             </div>
           ),
         )}
@@ -144,7 +144,7 @@ export default function AskChat({ names }: { names: Record<number, string> }) {
           className="input"
           rows={2}
           maxLength={600}
-          placeholder="اكتب سؤالك هنا…"
+          placeholder="اكتب سؤالك لحاج خبرة…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -166,7 +166,7 @@ export default function AskChat({ names }: { names: Record<number, string> }) {
         </div>
       </form>
       <p className="muted small" style={{ marginTop: ".5rem" }}>
-        الإجابات يولدها الذكاء الاصطناعي من بيانات الشجرة وقد تحتوي أخطاء. تحقّق من الأسماء بالضغط عليها.
+        إجابات حاج خبرة يولدها الذكاء الاصطناعي من بيانات الشجرة وقد تحتوي أخطاء. تحقّق من الأسماء بالضغط عليها.
       </p>
     </div>
   );

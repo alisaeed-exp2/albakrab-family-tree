@@ -3,7 +3,7 @@ import AskChat from "@/components/AskChat";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = { title: "اسأل عن العائلة — شجرة عائلة الباكراب" };
+export const metadata = { title: "حاج خبرة — شجرة عائلة الباكراب" };
 
 export default async function AskPage() {
   const f = await loadFamily();
@@ -12,8 +12,8 @@ export default async function AskPage() {
 
   return (
     <div className="narrow">
-      <h1>اسأل عن العائلة</h1>
-      <p className="muted">مساعد ذكي يجيب عن أسئلتك حول أفراد عائلة الباكراب وصلات القرابة بينهم.</p>
+      <h1>اسأل حاج خبرة</h1>
+      <p className="muted">حاج خبرة مساعد ذكي طوّره علي سعيد لمساعدة عائلة الباكراب على معرفة أفرادها وإيجاد أقرب صلة قرابة بين أي شخصين.</p>
       <AskChat names={names} />
     </div>
   );
