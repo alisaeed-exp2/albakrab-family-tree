@@ -1,0 +1,53 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+model Person {
+  id       Int    @id @default(autoincrement())
+  name     String
+  gender   Gender
+
+  fatherId Int?
+  father   Person?  @relation("Father", fields: [fatherId], references: [id], onDelete: SetNull)
+  childrenAsFather Person[] @relation("Father")
+
+  motherId Int?
+  mother   Person?  @relation("Mother", fields: [motherId], references: [id], onDelete: SetNull)
+  childrenAsMother Person[] @relation("Mother")
+
+  parentMarriageId Int?
+  parentMarriage   Marriage? @relation("MarriageChildren", fields: [parentMarriageId], references: [id], onDelete: SetNull)
+
+  marriagesAsHusband Marriage[] @relation("Husband")
+  marriagesAsWife    Marriage[] @relation("Wife")
+
+  createdAt DateTime @default(now())
+
+  @@index([fatherId])
+  @@index([motherId])
+  @@index([parentMarriageId])
+}
+
+model Marriage {
+  id        Int    @id @default(autoincrement())
+  husbandId Int
+  husband   Person @relation("Husband", fields: [husbandId], references: [id], onDelete: Cascade)
+  wifeId    Int
+  wife      Person @relation("Wife", fields: [wifeId], references: [id], onDelete: Cascade)
+  order     Int    @default(1)
+  children  Person[] @relation("MarriageChildren")
+
+  createdAt DateTime @default(now())
+
+  @@unique([husbandId, wifeId])
+}
