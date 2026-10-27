@@ -337,7 +337,7 @@ export function describeRelation(f: Family, a: number, b: number): string {
     const noLink = ["الأب", "الأم"].filter((s) => !sides.has(s) && !missing.includes(s));
     const missingText = missing.length === 2 ? "الأب والأم غير مسجلين" : missing[0] === "الأم" ? "الأم غير مسجلة" : "الأب غير مسجل";
     if (noLink.length) lines.push(`  (لا توجد صلة من جهة ${noLink.join(" ولا ")} لـ${nameRef(a)}${missing.length ? `؛ و${missingText} في الشجرة` : ""})`);
-    else if (missing.length) lines.push(`  (${missingText} لـ${nameRef(a)} في الشجرة، فلم يُبحث من جهته)`);
+    else if (missing.length) lines.push(`  (${missingText} لـ${nameRef(a)} في الشجرة، فلم يُبحث من ${missing.length === 2 ? "جهتهما" : missing[0] === "الأم" ? "جهتها" : "جهته"})`);
   }
 
   // Shortest link through one marriage, used when there is no blood link or it is shorter.
