@@ -167,6 +167,7 @@ export async function deletePerson(_prev: ActionState, fd: FormData): Promise<Ac
   if (kids > 0) return fail("لا يمكن حذف شخص له أبناء. احذف الأبناء أو غيّر والديهم أولاً.");
   await prisma.person.delete({ where: { id } });
   revalidateAll();
+  if (str(fd, "stay") === "1") return done("تم الحذف");
   redirect("/");
 }
 
@@ -285,4 +286,52 @@ export async function addChild(_prev: ActionState, fd: FormData): Promise<Action
   }
   revalidateAll();
   return done(g === "MALE" ? `تمت إضافة الابن ${name}` : `تمت إضافة الابنة ${name}`);
+}
+
+/** Link a person who is already in the tree as the child of a marriage. */
+export async function linkChild(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  await requireAdmin();
+  const marriageId = optId(fd, "marriageId");
+  const childId = optId(fd, "childId");
+  if (!marriageId) return fail("الزواج غير معروف");
+  if (!childId) return fail("اختر الشخص من القائمة");
+  const m = await prisma.marriage.findUnique({ where: { id: marriageId } });
+  if (!m) return fail("الزواج غير موجود");
+
+  const f = await loadFamily();
+  const child = f.persons[childId];
+  if (!child) return fail("الشخص غير موجود");
+  const err = validateParents(f, childId, m.husbandId, m.wifeId);
+  if (err) return fail(err);
+
+  await prisma.person.update({
+    where: { id: childId },
+    data: { fatherId: m.husbandId, motherId: m.wifeId, parentMarriageId: m.id },
+  });
+  revalidateAll();
+  return done(`تم ربط ${child.name} بهذا الزواج`);
+}
+
+/** Create a new father or mother for a person (useful to extend the tree upwards). */
+export async function addParent(_prev: ActionState, fd: FormData): Promise<ActionState> {
+  await requireAdmin();
+  const personId = optId(fd, "personId");
+  const role = str(fd, "role");
+  const name = str(fd, "name");
+  if (!personId) return fail("شخص غير معروف");
+  if (role !== "father" && role !== "mother") return fail("اختر أب أو أم");
+  if (!name) return fail("الاسم مطلوب");
+
+  const person = await prisma.person.findUnique({ where: { id: personId } });
+  if (!person) return fail("الشخص غير موجود");
+  if (role === "father" && person.fatherId != null) return fail("الأب مسجل مسبقاً، غيّره من «ربط الأب والأم»");
+  if (role === "mother" && person.motherId != null) return fail("الأم مسجلة مسبقاً، غيّرها من «ربط الأب والأم»");
+
+  const parent = await prisma.person.create({ data: { name, gender: role === "father" ? "MALE" : "FEMALE" } });
+  const fatherId = role === "father" ? parent.id : person.fatherId;
+  const motherId = role === "mother" ? parent.id : person.motherId;
+  const parentMarriageId = fatherId != null && motherId != null ? await ensureMarriage(fatherId, motherId) : null;
+  await prisma.person.update({ where: { id: personId }, data: { fatherId, motherId, parentMarriageId } });
+  revalidateAll();
+  return done(role === "father" ? "تمت إضافة الأب" : "تمت إضافة الأم");
 }

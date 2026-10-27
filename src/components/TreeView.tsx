@@ -3,19 +3,24 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { childGroups, ordinalAr, type Family } from "@/lib/family";
+import EditDrawer from "./EditDrawer";
 
 type Props = {
   family: Family;
   rootIds: number[];
   focusId?: number | null;
+  admin?: boolean;
 };
 
 const DEFAULT_DEPTH = 4;
 
-export default function TreeView({ family: f, rootIds, focusId }: Props) {
+export default function TreeView({ family: f, rootIds, focusId, admin = false }: Props) {
   const [depth, setDepth] = useState(DEFAULT_DEPTH);
   const [overrides, setOverrides] = useState<Record<number, boolean>>({});
   const [zoom, setZoom] = useState(1);
+  const [editMode, setEditMode] = useState(admin);
+  const [editId, setEditId] = useState<number | null>(null);
+  const editing = admin && editMode;
 
   const groupsCache = useMemo(() => new Map<number, ReturnType<typeof childGroups>>(), [f]);
   const groups = (id: number) => {
@@ -36,15 +41,27 @@ export default function TreeView({ family: f, rootIds, focusId }: Props) {
     const p = f.persons[id];
     if (!p) return null;
     const g = f.gen[id];
-    return (
-      <Link
-        href={`/person/${id}`}
-        className={`pcard ${p.gender === "MALE" ? "m" : "f"}${spouse ? " spouse" : ""}${id === focusId ? " focus" : ""}`}
-        title={note}
-      >
+    const cls = `pcard ${p.gender === "MALE" ? "m" : "f"}${spouse ? " spouse" : ""}${id === focusId ? " focus" : ""}${
+      editing && id === editId ? " editing" : ""
+    }`;
+    const inner = (
+      <>
         {note && <span className="pnote">{note}</span>}
         <span className="pname">{p.name}</span>
         {!spouse && g != null && <span className="pgen">الجيل {g}</span>}
+      </>
+    );
+    if (editing) {
+      return (
+        <button type="button" className={cls} title={`تعديل ${p.name}`} onClick={() => setEditId(id)}>
+          {inner}
+          <span className="pedit" aria-hidden>✎</span>
+        </button>
+      );
+    }
+    return (
+      <Link href={`/person/${id}`} className={cls} title={note}>
+        {inner}
       </Link>
     );
   }
@@ -147,6 +164,20 @@ export default function TreeView({ family: f, rootIds, focusId }: Props) {
         <button type="button" className="btn" onClick={() => { setOverrides({}); setDepth(1); }}>
           طي الكل
         </button>
+        {admin && (
+          <button
+            type="button"
+            className={`btn${editMode ? " primary" : ""}`}
+            onClick={() => {
+              setEditMode((v) => !v);
+              setEditId(null);
+            }}
+            aria-pressed={editMode}
+          >
+            ✎ وضع التعديل {editMode ? "مفعّل" : "متوقف"}
+          </button>
+        )}
+        {editing && <span className="muted small">اضغط على أي اسم لتعديله أو الإضافة إليه</span>}
         <span className="spacer" />
         <button type="button" className="btn icon" onClick={() => setZoom((z) => Math.max(0.3, +(z - 0.1).toFixed(2)))} aria-label="تصغير">
           −
@@ -167,6 +198,9 @@ export default function TreeView({ family: f, rootIds, focusId }: Props) {
           </ul>
         </div>
       </div>
+      {editing && editId != null && (
+        <EditDrawer family={f} personId={editId} onClose={() => setEditId(null)} onSelect={setEditId} />
+      )}
     </div>
   );
 }

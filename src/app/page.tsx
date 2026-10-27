@@ -50,7 +50,7 @@ export default async function HomePage({ searchParams }: { searchParams: Promise
           </p>
         </div>
       ) : (
-        <TreeView family={f} rootIds={rootIds} focusId={focusId} />
+        <TreeView family={f} rootIds={rootIds} focusId={focusId} admin={admin} />
       )}
 
       {admin && (

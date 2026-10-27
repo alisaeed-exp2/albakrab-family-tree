@@ -223,3 +223,46 @@ details.panel[open] > summary { margin-bottom: .8rem; }
   h1 { font-size: 1.6rem; }
   .tree-scroll { max-height: calc(100vh - 200px); }
 }
+
+/* ---------- Inline editing ---------- */
+.small { font-size: .85rem; }
+button.pcard { font: inherit; font-weight: 600; cursor: pointer; position: relative; }
+button.pcard.spouse { font-weight: 500; }
+.pedit {
+  position: absolute; top: -7px; inset-inline-start: -7px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--gold); color: #fff; font-size: .65rem; line-height: 18px;
+  opacity: 0; transition: opacity .12s;
+}
+button.pcard:hover .pedit, button.pcard:focus-visible .pedit, button.pcard.editing .pedit { opacity: 1; }
+.pcard.editing { box-shadow: 0 0 0 3px var(--gold); }
+button.chip { font: inherit; font-size: .9rem; cursor: pointer; }
+button.chip:hover { filter: brightness(.96); }
+
+.drawer {
+  position: fixed; z-index: 20;
+  top: 64px; bottom: 0; inset-inline-end: 0;
+  width: min(420px, 100vw);
+  background: var(--paper); border-inline-start: 1px solid var(--border);
+  box-shadow: 0 0 24px rgba(0,0,0,.15);
+  display: flex; flex-direction: column;
+}
+.drawer-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem;
+  padding: .8rem 1rem; border-bottom: 1px solid var(--border); background: #fbf7ee;
+}
+.drawer-title { font-size: 1.25rem; font-weight: 700; color: var(--green); }
+.drawer-sub { font-size: .85rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.drawer-body { overflow-y: auto; padding: .7rem 1rem 2rem; flex: 1; }
+.drawer-links { display: flex; gap: .4rem; margin-bottom: .6rem; flex-wrap: wrap; }
+.dsec { border: 1px solid var(--border); border-radius: var(--radius); padding: .55rem .75rem; margin-bottom: .6rem; background: #fff; }
+.dsec > summary { cursor: pointer; font-weight: 600; color: var(--green); }
+.dsec[open] > summary { margin-bottom: .55rem; }
+.dsec .marriage { margin-top: .5rem; background: #fcfaf5; }
+.dsub { margin-top: .7rem; padding-top: .6rem; border-top: 1px dashed var(--border); }
+.mini-label { font-size: .8rem; color: var(--muted); margin-bottom: .3rem; }
+.danger-text { color: var(--danger) !important; }
+
+@media (max-width: 640px) {
+  .drawer { top: auto; height: 75vh; width: 100vw; border-radius: 14px 14px 0 0; }
+}
