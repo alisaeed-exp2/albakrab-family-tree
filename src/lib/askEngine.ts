@@ -332,8 +332,10 @@ export function describeRelation(f: Family, a: number, b: number): string {
   });
   if (blood && blood.dA > 0) {
     const p = f.persons[a];
-    const missing = [p.fatherId == null ? "الأب" : null, p.motherId == null ? "الأم" : null].filter(Boolean);
-    const sides = new Set(bloods.map((r) => (isM(f, r.up[1]) ? "الأب" : "الأم")));
+    const missing: string[] = [];
+    if (p.fatherId == null) missing.push("الأب");
+    if (p.motherId == null) missing.push("الأم");
+    const sides = new Set<string>(bloods.map((r) => (isM(f, r.up[1]) ? "الأب" : "الأم")));
     const noLink = ["الأب", "الأم"].filter((s) => !sides.has(s) && !missing.includes(s));
     const missingText = missing.length === 2 ? "الأب والأم غير مسجلين" : missing[0] === "الأم" ? "الأم غير مسجلة" : "الأب غير مسجل";
     if (noLink.length) lines.push(`  (لا توجد صلة من جهة ${noLink.join(" ولا ")} لـ${nameRef(a)}${missing.length ? `؛ و${missingText} في الشجرة` : ""})`);
