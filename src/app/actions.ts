@@ -213,11 +213,23 @@ export async function deleteMarriage(_prev: ActionState, fd: FormData): Promise<
   if (!id) return fail("زواج غير معروف");
   const m = await prisma.marriage.findUnique({ where: { id } });
   if (!m) return fail("الزواج غير موجود");
-  const kids = await prisma.person.count({
-    where: { OR: [{ parentMarriageId: id }, { fatherId: m.husbandId, motherId: m.wifeId }] },
-  });
-  if (kids > 0) return fail("لا يمكن حذف زواج له أبناء");
-  await prisma.marriage.delete({ where: { id } });
+  const kidsWhere = { OR: [{ parentMarriageId: id }, { fatherId: m.husbandId, motherId: m.wifeId }] };
+  const kids = await prisma.person.count({ where: kidsWhere });
+
+  if (kids > 0) {
+    // Keep the children under the parent who belongs to the family (the father if both do).
+    const f = await loadFamily();
+    const keepFather = !!f.blood[m.husbandId] || !f.blood[m.wifeId];
+    await prisma.$transaction([
+      prisma.person.updateMany({
+        where: kidsWhere,
+        data: keepFather ? { motherId: null, parentMarriageId: null } : { fatherId: null, parentMarriageId: null },
+      }),
+      prisma.marriage.delete({ where: { id } }),
+    ]);
+  } else {
+    await prisma.marriage.delete({ where: { id } });
+  }
   revalidateAll();
   return done("تم حذف الزواج");
 }

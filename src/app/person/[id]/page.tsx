@@ -69,6 +69,7 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
   });
   const otherKids = (f.childrenOf[id] ?? []).filter((c) => !placed.has(c));
   const multi = marriageBlocks.length > 1;
+  const keepWithFather = (husbandId: number, wifeId: number) => !!f.blood[husbandId] || !f.blood[wifeId];
 
   // Siblings
   const sibIds = new Set<number>();
@@ -151,18 +152,22 @@ export default async function PersonPage({ params }: { params: Promise<{ id: str
                       <button className="btn small" title="تأخير في الترتيب">▼</button>
                     </form>
                   )}
-                  {kids.length === 0 && (
-                    <ActionForm
-                      action={deleteMarriage}
-                      submitLabel="حذف الزواج"
-                      pendingLabel="…"
-                      confirmText="هل تريد حذف هذا الزواج؟ (لن يُحذف الشخص نفسه)"
-                      className="form inline"
-                      buttonClassName="btn small danger"
-                    >
-                      <input type="hidden" name="marriageId" value={m.id} />
-                    </ActionForm>
-                  )}
+                  <ActionForm
+                    action={deleteMarriage}
+                    submitLabel="حذف الزواج"
+                    pendingLabel="…"
+                    confirmText={
+                      kids.length === 0
+                        ? "هل تريد حذف هذا الزواج؟ (لن يُحذف الزوجان)"
+                        : `هذا الزواج له ${kids.length} من الأبناء. عند الحذف يبقى الأبناء في الشجرة مع ${
+                            keepWithFather(m.husbandId, m.wifeId) ? "الأب" : "الأم"
+                          } فقط، ويُلغى ربطهم بـ${keepWithFather(m.husbandId, m.wifeId) ? "الأم" : "الأب"}. هل تريد المتابعة؟`
+                    }
+                    className="form inline"
+                    buttonClassName="btn small danger"
+                  >
+                    <input type="hidden" name="marriageId" value={m.id} />
+                  </ActionForm>
                 </div>
               )}
             </div>
