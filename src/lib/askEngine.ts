@@ -157,11 +157,8 @@ function upChain(anc: Anc, ancestor: number): number[] {
 
 export type Blood = { a: number; b: number; ca: number; dA: number; dB: number; up: number[]; down: number[] };
 
-/** Shortest blood relationship, searching up from both people to the closest common ancestor. */
-export function bloodRelation(f: Family, a: number, b: number): Blood | null {
-  if (a === b) return null;
-  const ancA = ancestors(f, a);
-  const ancB = ancestors(f, b);
+/** Closest common ancestor between two ancestor maps. */
+function closest(ancA: Anc, ancB: Anc) {
   let best: { ca: number; total: number; spread: number } | null = null;
   for (const [id, { dist }] of ancA) {
     const other = ancB.get(id);
@@ -170,10 +167,52 @@ export function bloodRelation(f: Family, a: number, b: number): Blood | null {
     const spread = Math.abs(dist - other.dist);
     if (!best || total < best.total || (total === best.total && spread < best.spread)) best = { ca: id, total, spread };
   }
-  if (!best) return null;
-  const up = upChain(ancA, best.ca); // a ... ca
-  const down = upChain(ancB, best.ca).reverse(); // ca ... b
-  return { a, b, ca: best.ca, dA: ancA.get(best.ca)!.dist, dB: ancB.get(best.ca)!.dist, up, down };
+  return best;
+}
+
+/**
+ * Blood relationships of b to a, searched in both directions: up from a through
+ * the FATHER's side and through the MOTHER's side separately, and up from b
+ * through both of b's parents. Returns the closest link on each of a's sides
+ * (shortest first), so a relative through the mother is never hidden by one
+ * through the father.
+ */
+export function bloodRelations(f: Family, a: number, b: number): Blood[] {
+  if (a === b) return [];
+  const ancB = ancestors(f, b);
+
+  // a is an ancestor of b (b is a child/grandchild of a)
+  if (ancB.has(a)) {
+    return [{ a, b, ca: a, dA: 0, dB: ancB.get(a)!.dist, up: [a], down: upChain(ancB, a).reverse() }];
+  }
+
+  const p = f.persons[a];
+  const out: Blood[] = [];
+  for (const parent of [p?.fatherId, p?.motherId]) {
+    if (parent == null || !f.persons[parent]) continue;
+    // ancestors of a reached through this parent only
+    const sub = ancestors(f, parent);
+    const ancA: Anc = new Map([[a, { dist: 0, via: null }]]);
+    for (const [id, v] of sub) ancA.set(id, { dist: v.dist + 1, via: v.via ?? a });
+    const best = closest(ancA, ancB);
+    if (!best) continue;
+    out.push({
+      a,
+      b,
+      ca: best.ca,
+      dA: ancA.get(best.ca)!.dist,
+      dB: ancB.get(best.ca)!.dist,
+      up: upChain(ancA, best.ca), // a ... ca
+      down: upChain(ancB, best.ca).reverse(), // ca ... b
+    });
+  }
+  out.sort((x, y) => x.dA + x.dB - (y.dA + y.dB) || Math.abs(x.dA - x.dB) - Math.abs(y.dA - y.dB));
+  return out;
+}
+
+/** The single shortest blood relationship (either side). */
+export function bloodRelation(f: Family, a: number, b: number): Blood | null {
+  return bloodRelations(f, a, b)[0] ?? null;
 }
 
 const g = (f: Family, id: number) => f.persons[id]?.gender ?? "MALE";
@@ -276,16 +315,29 @@ export function describeRelation(f: Family, a: number, b: number): string {
 
   if (spousesOf(f, a).includes(b)) lines.push(`- ${nameRef(b)} ${isM(f, b) ? "زوج" : "زوجة"} ${nameRef(a)} مباشرة.`);
 
-  const blood = bloodRelation(f, a, b);
-  if (blood) {
-    const term = bloodTerm(f, blood);
+  const bloods = bloodRelations(f, a, b);
+  const blood = bloods[0] ?? null;
+  bloods.forEach((r, i) => {
+    const term = bloodTerm(f, r);
+    // which side of a the link goes through (a's father or a's mother)
+    const side = r.dA === 0 ? "" : isM(f, r.up[1]) ? " من جهة الأب" : " من جهة الأم";
+    const label = i === 0 ? (bloods.length > 1 ? "أقرب صلة بالدم" : "قرابة بالدم") : "وأيضاً قرابة بالدم";
     lines.push(
-      `- قرابة بالدم: ${nameRef(b)} هو/هي ${term ? `«${term}»` : "قريب/قريبة"} لـ${nameRef(a)}.` +
-        (blood.dA > 0 && blood.dB > 0
-          ? ` الجد المشترك الأقرب ${nameRef(blood.ca)}: ${nameRef(a)} يبعد عنه ${blood.dA} جيل/أجيال، و${nameRef(b)} يبعد ${blood.dB}.`
+      `- ${label}${side} (لـ${nameRef(a)}): ${nameRef(b)} هو/هي ${term ? `«${term}»` : "قريب/قريبة"} لـ${nameRef(a)}.` +
+        (r.dA > 0 && r.dB > 0
+          ? ` الجد المشترك الأقرب ${nameRef(r.ca)}: ${nameRef(a)} يبعد عنه ${r.dA} جيل/أجيال، و${nameRef(b)} يبعد ${r.dB}.`
           : ""),
     );
-    lines.push(`  المسار: ${pathText(f, blood)}`);
+    lines.push(`  المسار: ${pathText(f, r)}`);
+  });
+  if (blood && blood.dA > 0) {
+    const p = f.persons[a];
+    const missing = [p.fatherId == null ? "الأب" : null, p.motherId == null ? "الأم" : null].filter(Boolean);
+    const sides = new Set(bloods.map((r) => (isM(f, r.up[1]) ? "الأب" : "الأم")));
+    const noLink = ["الأب", "الأم"].filter((s) => !sides.has(s) && !missing.includes(s));
+    const missingText = missing.length === 2 ? "الأب والأم غير مسجلين" : missing[0] === "الأم" ? "الأم غير مسجلة" : "الأب غير مسجل";
+    if (noLink.length) lines.push(`  (لا توجد صلة من جهة ${noLink.join(" ولا ")} لـ${nameRef(a)}${missing.length ? `؛ و${missingText} في الشجرة` : ""})`);
+    else if (missing.length) lines.push(`  (${missingText} لـ${nameRef(a)} في الشجرة، فلم يُبحث من جهته)`);
   }
 
   // Shortest link through one marriage, used when there is no blood link or it is shorter.
@@ -434,9 +486,10 @@ export function buildAskContext(f: Family, messages: Msg[]): AskContext {
         if (a === b) continue;
         relLines.push(`### صلة [[${b}]] بـ[[${a}]]`);
         relLines.push(describeRelation(f, a, b));
-        const blood = bloodRelation(f, a, b);
-        blood?.up.forEach(add);
-        blood?.down.forEach(add);
+        for (const r of bloodRelations(f, a, b)) {
+          r.up.forEach(add);
+          r.down.forEach(add);
+        }
       }
     }
   }
@@ -460,12 +513,11 @@ export function buildAskContext(f: Family, messages: Msg[]): AskContext {
     add(id);
     const p = f.persons[id];
     if (!p) continue;
-    // father line up to the top
-    let cur: PersonRow | undefined = p;
-    for (let k = 0; k < 30 && cur; k++) {
-      add(cur.fatherId);
-      add(cur.motherId);
-      cur = cur.fatherId != null ? f.persons[cur.fatherId] : undefined;
+    // all ancestors, through both the father's and the mother's side
+    let n = 0;
+    for (const anc of ancestors(f, id).keys()) {
+      if (n++ > 40) break;
+      add(anc);
     }
     spousesOf(f, id).forEach(add);
     for (const c of f.childrenOf[id] ?? []) {
