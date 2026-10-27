@@ -43,6 +43,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <nav className="nav">
             <Link href="/">الشجرة</Link>
             <Link href="/search">بحث</Link>
+            <Link href="/ask">اسأل الذكاء الاصطناعي</Link>
             {admin ? (
               <form action={logout}>
                 <span className="admin-badge">المشرف</span>

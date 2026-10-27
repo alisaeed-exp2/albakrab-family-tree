@@ -266,3 +266,28 @@ button.chip:hover { filter: brightness(.96); }
 @media (max-width: 640px) {
   .drawer { top: auto; height: 75vh; width: 100vw; border-radius: 14px 14px 0 0; }
 }
+
+/* ---------- Ask AI ---------- */
+.ask { display: flex; flex-direction: column; gap: .8rem; }
+.ask-log { display: flex; flex-direction: column; gap: .7rem; min-height: 200px; }
+.ask-empty { background: var(--paper); border: 1px dashed var(--border); border-radius: var(--radius); padding: 1rem; }
+.ask-suggest { display: flex; flex-wrap: wrap; gap: .45rem; }
+.ask-suggest .btn { text-align: start; }
+.ask-msg { padding: .7rem .95rem; border-radius: 12px; max-width: 92%; line-height: 1.75; }
+.ask-msg.user { align-self: flex-start; background: var(--green); color: #fff; white-space: pre-wrap; border-start-start-radius: 4px; }
+.ask-msg.bot { align-self: flex-end; background: var(--paper); border: 1px solid var(--border); border-start-end-radius: 4px; width: 92%; }
+.ask-answer p { margin: 0 0 .35rem; }
+.ask-answer h3 { margin: .5rem 0 .3rem; color: var(--green); }
+.ask-gap { height: .35rem; }
+.ask-li { display: flex; gap: .45rem; margin-bottom: .2rem; }
+.ask-dot { color: var(--gold); flex: 0 0 auto; }
+.ask-person {
+  display: inline-block; padding: 0 .45rem; margin: 0 .1rem; border-radius: 6px;
+  background: #efe7d6; color: var(--green); font-weight: 600;
+}
+.ask-person:hover { text-decoration: none; background: #e6dbc3; }
+.ask-typing { color: var(--muted); animation: askpulse 1.2s infinite; }
+@keyframes askpulse { 50% { opacity: .4; } }
+.ask-form { display: flex; flex-direction: column; gap: .5rem; position: sticky; bottom: 0; background: var(--bg); padding: .5rem 0; }
+.ask-form textarea { resize: vertical; min-height: 3.2rem; }
+.ask-actions { display: flex; gap: .5rem; }
