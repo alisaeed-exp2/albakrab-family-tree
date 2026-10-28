@@ -71,11 +71,17 @@ export async function POST(req: Request) {
   const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5";
   const effort = process.env.ANTHROPIC_EFFORT || "low";
 
-  // Tools and instructions never change between questions, so they are cached.
-  const tools = HAAJ_TOOLS.map((t, i) =>
-    i === HAAJ_TOOLS.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t,
-  );
-  const system = [{ type: "text", text: ASK_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
+  // Prompt caching, in two layers:
+  // 1. Tools + instructions never change, so they are cached for 1 hour (one breakpoint at the
+  //    end of the system prompt covers both, since the cache prefix is tools → system → messages).
+  //    Visitors ask occasionally, and a 5-minute cache would usually have expired between questions.
+  // 2. Automatic caching (top-level cache_control below) moves a 5-minute breakpoint to the end of
+  //    the conversation on every round, so each lookup round reads the earlier rounds from cache
+  //    instead of paying for them again.
+  const tools = HAAJ_TOOLS;
+  const system = [
+    { type: "text", text: ASK_SYSTEM_PROMPT, cache_control: { type: "ephemeral", ttl: process.env.ANTHROPIC_CACHE_TTL || "1h" } },
+  ];
 
   const call = (messages: unknown[], withThinking: boolean) =>
     fetch("https://api.anthropic.com/v1/messages", {
@@ -85,10 +91,13 @@ export async function POST(req: Request) {
         model,
         max_tokens: 8000,
         stream: true,
-        system,
+        system: withThinking ? system : [{ type: "text", text: ASK_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
         tools,
         messages,
-        ...(withThinking ? { thinking: { type: "adaptive" }, output_config: { effort } } : {}),
+        // "full" settings; the fallback (after a 400) uses the API defaults with no extras.
+        ...(withThinking
+          ? { cache_control: { type: "ephemeral" }, thinking: { type: "adaptive" }, output_config: { effort } }
+          : {}),
       }),
     });
 
@@ -247,7 +256,11 @@ export async function POST(req: Request) {
               cache_read_tokens: usage.cacheRead,
               output_tokens: usage.output,
               total_input_tokens: usage.input + usage.cacheWrite + usage.cacheRead,
-              effort: withThinking ? effort : "default",
+              cached_share:
+                usage.input + usage.cacheWrite + usage.cacheRead
+                  ? `${Math.round((100 * usage.cacheRead) / (usage.input + usage.cacheWrite + usage.cacheRead))}%`
+                  : "0%",
+              effort: withThinking ? effort : "default (fallback)",
               stop_reason: stopReason,
               answered: wroteText,
               seconds: Math.round((Date.now() - started) / 100) / 10,
