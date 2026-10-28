@@ -3,7 +3,23 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Msg = { role: "user" | "assistant"; content: string; status?: string };
+
+/** Progress notes from the server start with this character; they are shown, not kept. */
+const STATUS = "\u0001";
+
+function splitStatus(raw: string): { text: string; status?: string } {
+  let status: string | undefined;
+  const kept: string[] = [];
+  for (const l of raw.split("\n")) {
+    if (l.startsWith(STATUS)) status = l.slice(1);
+    else {
+      kept.push(l);
+      if (l.trim()) status = undefined; // answer text arrived after the last lookup
+    }
+  }
+  return { text: kept.join("\n"), status };
+}
 
 const SUGGESTIONS = [
   "من هو الجد الأكبر للعائلة وكم عدد أبنائه؟",
@@ -95,10 +111,14 @@ export default function AskChat({ names }: { names: Record<number, string> }) {
         const { done, value } = await reader.read();
         if (done) break;
         acc += decoder.decode(value, { stream: true });
-        const snapshot = acc;
-        setMessages([...history, { role: "assistant", content: snapshot }]);
+        const { text, status } = splitStatus(acc);
+        setMessages([...history, { role: "assistant", content: text.replace(/^\n+/, ""), status }]);
       }
-      if (!acc.trim()) setMessages([...history, { role: "assistant", content: "لم تصل إجابة، حاول مرة أخرى." }]);
+      const { text } = splitStatus(acc);
+      setMessages([
+        ...history,
+        { role: "assistant", content: text.trim() ? text.replace(/^\n+/, "") : "لم تصل إجابة، حاول مرة أخرى." },
+      ]);
     } catch {
       setMessages([...history, { role: "assistant", content: "تعذر الاتصال بالخدمة، حاول مرة أخرى." }]);
     } finally {
@@ -126,7 +146,10 @@ export default function AskChat({ names }: { names: Record<number, string> }) {
             <div key={i} className="ask-msg user">{m.content}</div>
           ) : (
             <div key={i} className="ask-msg bot">
-              {m.content ? <Answer text={m.content} names={names} /> : <span className="ask-typing">حاج خبرة يفكر…</span>}
+              {m.content && <Answer text={m.content} names={names} />}
+              {busy && i === messages.length - 1 && (
+                <span className="ask-typing">{m.status ? `حاج خبرة ${m.status}` : m.content ? "" : "حاج خبرة يفكر…"}</span>
+              )}
             </div>
           ),
         )}

@@ -1,16 +1,22 @@
 import { loadFamily } from "@/lib/data";
 import { ASK_SYSTEM_PROMPT } from "@/lib/askContext";
-import { buildAskContext } from "@/lib/askEngine";
+import { HAAJ_TOOLS, runHaajTool, toolStatus } from "@/lib/haajTools";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 type Msg = { role: "user" | "assistant"; content: string };
+type Block = Record<string, unknown> & { type: string };
 
 const MAX_QUESTION = 600;
 const MAX_HISTORY = 6;
+const MAX_ROUNDS = 8; // tool-use rounds per question
 const RATE_LIMIT = 20; // questions
 const RATE_WINDOW_MS = 10 * 60 * 1000; // per 10 minutes per visitor
+
+/** Lines starting with this character are progress notes, not part of the answer. */
+const STATUS = "\u0001";
 
 const hits = new Map<string, number[]>();
 function limited(ip: string) {
@@ -43,144 +49,210 @@ export async function POST(req: Request) {
   } catch {
     return textError("طلب غير صالح", 400);
   }
-  const messages = (body.messages ?? [])
+  const history = (body.messages ?? [])
     .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
     .slice(-MAX_HISTORY)
-    .map((m) => ({ role: m.role, content: m.content.slice(0, m.role === "user" ? MAX_QUESTION : 1500) }));
-  while (messages.length && messages[0].role !== "user") messages.shift();
-  if (!messages.length || messages[messages.length - 1].role !== "user") return textError("اكتب سؤالك", 400);
+    .map((m) => ({
+      role: m.role,
+      content: m.content
+        .split("\n")
+        .filter((l) => !l.startsWith(STATUS))
+        .join("\n")
+        .trim()
+        .slice(0, m.role === "user" ? MAX_QUESTION : 1500),
+    }))
+    .filter((m) => m.content);
+  while (history.length && history[0].role !== "user") history.shift();
+  if (!history.length || history[history.length - 1].role !== "user") return textError("اكتب سؤالك", 400);
 
   const f = await loadFamily();
   if (Object.keys(f.persons).length === 0) return textError("الشجرة فارغة حالياً، لا توجد بيانات للإجابة عنها.", 200);
 
-  // Only the people the question is about (or a compact full tree for general questions),
-  // with relationships already computed exactly by the app.
-  const ctx = buildAskContext(f, messages);
-  const dataBlock: Record<string, unknown> = { type: "text", text: `# بيانات شجرة العائلة\n\n${ctx.text}` };
-  // The full tree is identical between questions, so caching it pays off; a focused extract is not.
-  if (ctx.mode === "full") dataBlock.cache_control = { type: "ephemeral" };
-  const effort =
-    ctx.mode === "full" ? process.env.ANTHROPIC_EFFORT || "medium" : process.env.ANTHROPIC_EFFORT_FOCUSED || "low";
+  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5";
+  const effort = process.env.ANTHROPIC_EFFORT || "low";
 
-  const base = {
-    model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
-    // Thinking tokens count against max_tokens, so leave plenty of room for the answer itself.
-    max_tokens: 8000,
-    stream: true,
-    system: [{ type: "text", text: ASK_SYSTEM_PROMPT }, dataBlock],
-    messages,
-  };
-  const call = (body: object) =>
+  // Tools and instructions never change between questions, so they are cached.
+  const tools = HAAJ_TOOLS.map((t, i) =>
+    i === HAAJ_TOOLS.length - 1 ? { ...t, cache_control: { type: "ephemeral" } } : t,
+  );
+  const system = [{ type: "text", text: ASK_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }];
+
+  const call = (messages: unknown[], withThinking: boolean) =>
     fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
+      headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        max_tokens: 8000,
+        stream: true,
+        system,
+        tools,
+        messages,
+        ...(withThinking ? { thinking: { type: "adaptive" }, output_config: { effort } } : {}),
+      }),
     });
 
-  let upstream = await call({
-    ...base,
-    thinking: { type: "adaptive" },
-    output_config: { effort },
-  });
-  if (upstream.status === 400) {
-    // The model may not accept these settings; retry with the API defaults.
-    console.warn("Ask: settings rejected, retrying with defaults", (await upstream.text().catch(() => "")).slice(0, 300));
-    upstream = await call(base);
-  }
-
-  if (!upstream.ok || !upstream.body) {
-    const detail = await upstream.text().catch(() => "");
-    console.error("Anthropic API error", upstream.status, detail.slice(0, 500));
-    return textError("تعذر الحصول على إجابة من خدمة الذكاء الاصطناعي حالياً.", 502);
-  }
-
-  // Convert the server-sent events into a plain text stream.
-  const reader = upstream.body.getReader();
-  const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let buffer = "";
+      const send = (s: string) => controller.enqueue(encoder.encode(s));
+      const status = (s: string) => send(`${STATUS}${s}\n`);
+
+      const usage = { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
+      const toolsUsed: string[] = [];
+      const started = Date.now();
       let wroteText = false;
       let stopReason: string | null = null;
-      const usage = { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
-      const started = Date.now();
+      let rounds = 0;
+      let withThinking = true;
+      const messages: unknown[] = history.map((m) => ({ role: m.role, content: m.content }));
+
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let idx;
-          while ((idx = buffer.indexOf("\n\n")) !== -1) {
-            const event = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            for (const line of event.split("\n")) {
-              if (!line.startsWith("data:")) continue;
-              const json = line.slice(5).trim();
-              if (!json) continue;
-              try {
-                const data = JSON.parse(json);
-                if (data.type === "content_block_delta" && data.delta?.type === "text_delta") {
-                  if (data.delta.text) wroteText = true;
-                  controller.enqueue(encoder.encode(data.delta.text));
-                } else if (data.type === "message_start" && data.message?.usage) {
-                  const u = data.message.usage;
-                  usage.input = u.input_tokens ?? 0;
-                  usage.cacheWrite = u.cache_creation_input_tokens ?? 0;
-                  usage.cacheRead = u.cache_read_input_tokens ?? 0;
-                  usage.output = u.output_tokens ?? 0;
-                } else if (data.type === "message_delta") {
-                  if (data.delta?.stop_reason) stopReason = data.delta.stop_reason;
-                  if (data.usage?.output_tokens != null) usage.output = data.usage.output_tokens;
-                } else if (data.type === "error") {
-                  wroteText = true;
-                  console.error("Anthropic stream error", data.error);
-                  controller.enqueue(encoder.encode("\n\n(حدث خطأ أثناء توليد الإجابة)"));
+        for (rounds = 1; rounds <= MAX_ROUNDS; rounds++) {
+          let upstream = await call(messages, withThinking);
+          if (upstream.status === 400 && withThinking && rounds === 1) {
+            console.warn("Ask: settings rejected, retrying with defaults", (await upstream.text().catch(() => "")).slice(0, 300));
+            withThinking = false;
+            upstream = await call(messages, withThinking);
+          }
+          if (!upstream.ok || !upstream.body) {
+            const detail = await upstream.text().catch(() => "");
+            console.error("Anthropic API error", upstream.status, detail.slice(0, 500));
+            send(wroteText ? "\n\n(تعذر إكمال الإجابة)" : "تعذر الحصول على إجابة من حاج خبرة حالياً، حاول بعد قليل.");
+            wroteText = true;
+            break;
+          }
+
+          // Read one streamed response, keeping every content block exactly as received.
+          const blocks: Block[] = [];
+          const jsonParts: Record<number, string> = {};
+          stopReason = null;
+          const reader = upstream.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let idx;
+            while ((idx = buffer.indexOf("\n\n")) !== -1) {
+              const event = buffer.slice(0, idx);
+              buffer = buffer.slice(idx + 2);
+              for (const line of event.split("\n")) {
+                if (!line.startsWith("data:")) continue;
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                let data: any;
+                try {
+                  data = JSON.parse(line.slice(5).trim());
+                } catch {
+                  continue;
                 }
-              } catch {
-                /* ignore partial lines */
+                switch (data.type) {
+                  case "message_start": {
+                    const u = data.message?.usage ?? {};
+                    usage.input += u.input_tokens ?? 0;
+                    usage.cacheWrite += u.cache_creation_input_tokens ?? 0;
+                    usage.cacheRead += u.cache_read_input_tokens ?? 0;
+                    break;
+                  }
+                  case "content_block_start":
+                    blocks[data.index] = { ...data.content_block };
+                    break;
+                  case "content_block_delta": {
+                    const b = blocks[data.index];
+                    const d = data.delta ?? {};
+                    if (!b) break;
+                    if (d.type === "text_delta") {
+                      b.text = ((b.text as string) ?? "") + d.text;
+                      if (d.text) {
+                        wroteText = true;
+                        send(d.text);
+                      }
+                    } else if (d.type === "thinking_delta") {
+                      b.thinking = ((b.thinking as string) ?? "") + d.thinking;
+                    } else if (d.type === "signature_delta") {
+                      b.signature = ((b.signature as string) ?? "") + d.signature;
+                    } else if (d.type === "input_json_delta") {
+                      jsonParts[data.index] = (jsonParts[data.index] ?? "") + d.partial_json;
+                    }
+                    break;
+                  }
+                  case "content_block_stop": {
+                    const b = blocks[data.index];
+                    if (b?.type === "tool_use") {
+                      try {
+                        b.input = jsonParts[data.index] ? JSON.parse(jsonParts[data.index]) : {};
+                      } catch {
+                        b.input = {};
+                      }
+                    }
+                    break;
+                  }
+                  case "message_delta":
+                    if (data.delta?.stop_reason) stopReason = data.delta.stop_reason;
+                    if (data.usage?.output_tokens != null) usage.output += data.usage.output_tokens;
+                    break;
+                  case "error":
+                    console.error("Anthropic stream error", data.error);
+                    break;
+                }
               }
             }
           }
+
+          const toolCalls = blocks.filter((b) => b?.type === "tool_use");
+          if (stopReason !== "tool_use" || !toolCalls.length) break;
+
+          // Run the requested lookups against the database, then hand the results back.
+          if (wroteText) send("\n\n");
+          const results = toolCalls.map((b) => {
+            const name = String(b.name);
+            const input = (b.input ?? {}) as Record<string, unknown>;
+            toolsUsed.push(name);
+            status(toolStatus(f, name, input));
+            return { type: "tool_result", tool_use_id: b.id, content: runHaajTool(f, name, input) };
+          });
+          // The assistant turn goes back exactly as received (thinking blocks included).
+          messages.push({ role: "assistant", content: blocks.filter(Boolean) });
+          messages.push({ role: "user", content: results });
         }
+
+        if (rounds > MAX_ROUNDS && !wroteText) stopReason = "too_many_rounds";
+        if (!wroteText) {
+          send(
+            stopReason === "max_tokens"
+              ? "السؤال احتاج تفكيراً أطول من المسموح. جرّب سؤالاً أبسط أو أكثر تحديداً."
+              : stopReason === "refusal"
+                ? "لم يتمكن حاج خبرة من الإجابة عن هذا السؤال."
+                : stopReason === "too_many_rounds"
+                  ? "السؤال احتاج بحثاً طويلاً جداً. جرّب سؤالاً أكثر تحديداً."
+                  : "لم تصل إجابة من حاج خبرة، حاول مرة أخرى.",
+          );
+        } else if (stopReason === "max_tokens") {
+          send("\n\n(توقفت الإجابة لأنها طويلة جداً)");
+        }
+      } catch (e) {
+        console.error("Ask failed", e);
+        send("\n\n(انقطع الاتصال أثناء توليد الإجابة، حاول مرة أخرى)");
+      } finally {
         // One line per question in the Railway logs: search for "ask_usage".
         console.log(
           "ask_usage " +
             JSON.stringify({
-              mode: ctx.mode,
-              people_sent: ctx.people,
-              names_found: ctx.mentions,
-              context_chars: ctx.text.length,
+              mode: "agent",
+              rounds: Math.min(rounds, MAX_ROUNDS),
+              tools_used: toolsUsed,
               input_tokens: usage.input,
               cache_write_tokens: usage.cacheWrite,
               cache_read_tokens: usage.cacheRead,
               output_tokens: usage.output,
               total_input_tokens: usage.input + usage.cacheWrite + usage.cacheRead,
-              effort,
+              effort: withThinking ? effort : "default",
               stop_reason: stopReason,
               answered: wroteText,
               seconds: Math.round((Date.now() - started) / 100) / 10,
             }),
         );
-        if (!wroteText) {
-          const msg =
-            stopReason === "max_tokens"
-              ? "السؤال احتاج تفكيراً أطول من المسموح. جرّب سؤالاً أبسط أو أكثر تحديداً."
-              : stopReason === "refusal"
-                ? "لم يتمكن المساعد من الإجابة عن هذا السؤال."
-                : "لم تصل إجابة من المساعد، حاول مرة أخرى.";
-          controller.enqueue(encoder.encode(msg));
-        } else if (stopReason === "max_tokens") {
-          controller.enqueue(encoder.encode("\n\n(توقفت الإجابة لأنها طويلة جداً)"));
-        }
-      } catch (e) {
-        console.error("Ask stream failed", e);
-        controller.enqueue(encoder.encode("\n\n(انقطع الاتصال أثناء توليد الإجابة، حاول مرة أخرى)"));
-      } finally {
         controller.close();
       }
     },
